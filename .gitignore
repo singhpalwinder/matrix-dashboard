@@ -6,6 +6,7 @@ __pycache__
 test
 test.py
 weather.py
-getWeather.log
+updateWeather.log
 weatherData.json
 dev.sh
+logs
