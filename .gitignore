@@ -10,3 +10,6 @@ updateWeather.log
 weatherData.json
 dev.sh
 logs
+.pio
+include
+lib

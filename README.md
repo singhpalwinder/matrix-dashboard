@@ -1,4 +1,1 @@
-# matrix-display
-
-# corntab entry for weather update every 10 minutes 
-*/10 * * * * echo "----$(date)----" > /home/admin/matrix-dashboard/logs/updateWeather.log && /home/admin/venv/bin/python3 /home/admin/matrix-dashboard/updateWeather.py >> /home/admin/matrix-dashboard/logs/updateWeather.log 2>&1
+This is the code that runs on the matrix portal s3 itself to display artwork + clock. The image sent from https://github.com/singhpalwinder/shairport-metadata is received by this project 
