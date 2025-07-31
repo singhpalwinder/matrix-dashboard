@@ -57,8 +57,8 @@ unsigned long lastFrameSwitch = 0;
 uint16_t frameDelay = 100;  // ms per frame
 bool isGifLoaded = false;
 
-const char* ssid     = "WakandaForever";
-const char* password = "ThatswhatsheSSID!";
+const char* ssid     = ""; // wifi name
+const char* password = ""; // wifi password
 unsigned long lastUpdate = 0;
 bool needsRedraw = false;
 bool uploadInProgress = false;
