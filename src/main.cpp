@@ -43,8 +43,22 @@ Timezone chicago;
 WiFiServer server(80);
 WiFiServer imageServer(9090);
 
-const char* ssid     = "";
-const char* password = "";
+//gif settings
+#define FRAME_WIDTH  32
+#define FRAME_HEIGHT 32
+#define FRAME_SIZE   (FRAME_WIDTH * FRAME_HEIGHT * 2) // RGB565
+
+#define MAX_FRAMES   10   // How many frames max to buffer for GIF
+
+uint8_t gifFrames[MAX_FRAMES][FRAME_SIZE];
+uint8_t totalFrames = 0;
+uint8_t currentFrameIndex = 0;
+unsigned long lastFrameSwitch = 0;
+uint16_t frameDelay = 100;  // ms per frame
+bool isGifLoaded = false;
+
+const char* ssid     = "WakandaForever";
+const char* password = "ThatswhatsheSSID!";
 unsigned long lastUpdate = 0;
 bool needsRedraw = false;
 bool uploadInProgress = false;
@@ -142,8 +156,8 @@ void loadColorFromFlash() {
 }
 void handleReset() {
   fatfs.remove("/icon.bmp");
-  imageLoaded = false;         // ✅ tells loop() to show time
-  needsRedraw = true;          // ✅ triggers a refresh next frame
+  imageLoaded = false;         // tells loop() to show time
+  needsRedraw = true;          // triggers a refresh next frame
   Serial.println("Image reset.");
 }
 void handleSleepMode(bool off){
@@ -193,28 +207,44 @@ void serverTask(void *parameter) {
     }
 
     // TCP image server on port 9090
+    //utilize socket connections for quick image uploads and save cpu cycles, this also gets rid of matrix display flicker during image transfer
     WiFiClient imageClient = imageServer.available();
-    if (imageClient) {
-      Serial.println("TCP client connected for image upload");
+      if (imageClient) {
+    Serial.println("TCP client connected for image/GIF upload");
 
-      int index = 0;
-      while (imageClient.connected()) {
-        while (imageClient.available()) {
-          if (index < sizeof(cachedImage)) {
-            cachedImage[index++] = imageClient.read();
-          } else {
-            imageClient.read();
-          }
+    int index = 0;
+    totalFrames = 0;
+    while (imageClient.connected()) {
+      while (imageClient.available()) {
+        if (index < MAX_FRAMES * FRAME_SIZE) {
+          uint8_t frame = index / FRAME_SIZE;
+          uint16_t posInFrame = index % FRAME_SIZE;
+          gifFrames[frame][posInFrame] = imageClient.read();
+          index++;
+        } else {
+          imageClient.read(); // discard overflow
         }
       }
-
-      Serial.printf("Received %d bytes\n", index);
-      imageLoaded = true;
-      needsRedraw = true;
-
-      imageClient.stop();
     }
 
+    totalFrames = index / FRAME_SIZE;
+    if (totalFrames > MAX_FRAMES) totalFrames = MAX_FRAMES;
+    if (totalFrames > 1)
+    {
+      isGifLoaded = true;
+      Serial.printf("Received GIF with %d frames\n", totalFrames);
+    }
+    else
+    {
+      memcpy(cachedImage, gifFrames[0], FRAME_SIZE);
+      isGifLoaded = false;
+      imageLoaded = true;
+      Serial.printf("Received static image\n");
+    }
+
+    needsRedraw = true;
+    imageClient.stop();
+  }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
@@ -243,7 +273,7 @@ void setup() {
   xTaskCreatePinnedToCore(
     serverTask,    // Task function
     "ServerTask",  // Task name
-    8192,              // Stack size
+    16384,              // Stack size
     NULL,              // Task input parameter
     1,                 // Priority
     NULL,              // Task handle
@@ -269,95 +299,93 @@ void getTextCenterPos(const String &text, int &x, int &y) {
   y = (HEIGHT + h) / 2 - 2;  // -2 helps visually center better
 }
 void loop() {
-  events(); // ezTime maintenance
-  if (turnOff) return; 
+  events();  // ezTime maintenance
+  if (turnOff) return;
 
   if (WiFi.status() != WL_CONNECTED || uploadInProgress || processingRequest || imageServer.hasClient()) {
-    // Skip frame update
     return;
   }
 
-  if ((millis() - lastUpdate > 1000 || needsRedraw)) {
+  // Handle GIF frame switching always
+  if (isGifLoaded && totalFrames > 0) {
+    if (millis() - lastFrameSwitch >= frameDelay) {
+      currentFrameIndex = (currentFrameIndex + 1) % totalFrames;
+      lastFrameSwitch = millis();
+      needsRedraw = true;
+    }
+  }
+
+  if ((millis() - lastUpdate > 1000) || needsRedraw) {
     lastUpdate = millis();
     needsRedraw = false;
-    
+
     cleanCanvas();
 
-    String hourStr = chicago.dateTime("g");
-    String minStr  = chicago.dateTime("i");
-    String ampmStr = chicago.dateTime("A");
-    String timeStr = hourStr + ":" + minStr + ampmStr;
+    if (isGifLoaded || imageLoaded) {
+      // Display static image or current GIF frame
+      const uint8_t* frameData = isGifLoaded ? gifFrames[currentFrameIndex] : cachedImage;
+      uint16_t* framebuffer = matrix.getBuffer();
 
-    if (timeStr != lastDrawnTime || imageLoaded  || !imageLoaded) {
-      
-      
-      if (!imageLoaded || uploadInProgress) {
-        matrix.setTextColor(currentTextColor);
-        // Horizontal centered
-        int x, y;
-        getTextCenterPos(timeStr, x, y);
-        matrix.setCursor(x, y);
-        matrix.print(timeStr);
-
-      } else {
-        // Image on left 32x32
-        uint16_t *framebuffer = matrix.getBuffer();
-        int index = 0;
-        for (int y = 0; y < 32; y++) {
-          for (int x = 0; x < 32; x++) {
-            uint8_t high = cachedImage[index++];
-            uint8_t low = cachedImage[index++];
-            uint16_t color = (high << 8) | low;
-            framebuffer[y * WIDTH + x] = color;
-          }
+      int index = 0;
+      for (int y = 0; y < 32; y++) {
+        for (int x = 0; x < 32; x++) {
+          uint8_t high = frameData[index++];
+          uint8_t low  = frameData[index++];
+          uint16_t color = (high << 8) | low;
+          framebuffer[y * WIDTH + x] = color;
         }
+      }
 
-
-      int cx = 47;  // center x (right side of 64x32 matrix)
-      int cy = 15;  // center y (middle of 32px height)
+      // Draw analog clock on the right half
+      int cx = 47;  // center x for analog clock (right side)
+      int cy = 15;  // center y
       int radius = 15;
-      matrix.drawCircle(cx, cy, radius, matrix.color565(250, 250,250));  // Blue border
-      matrix.fillCircle(cx, cy, 1, matrix.color565(250, 250,250)); // center circle
+
+      matrix.drawCircle(cx, cy, radius, matrix.color565(250, 250, 250));  // Outer circle
+      matrix.fillCircle(cx, cy, 1, matrix.color565(250, 250, 250));       // Center dot
+
       int hour = chicago.hourFormat12();
       int minute = chicago.minute();
-      //int second = chicago.second();
 
-      // Normalize to angles
-      float hour_angle = ((hour % 12) + (minute / 60.0)) * 30.0;     // 360/12 = 30 deg per hour
-      float minute_angle = minute * 6.0;                              // 360/60
-      //float second_angle = second * 6.0;
+      float hour_angle   = ((hour % 12) + (minute / 60.0)) * 30.0;
+      float minute_angle = minute * 6.0;
 
-      // Convert to radians
       float hr = DEG2RAD * (hour_angle - 90);
       float mr = DEG2RAD * (minute_angle - 90);
-     // float sr = DEG2RAD * (second_angle - 90);
 
-      // Compute endpoints
       int hx = cx + cos(hr) * (radius - 7);
       int hy = cy + sin(hr) * (radius - 7);
-
       int mx = cx + cos(mr) * (radius - 5);
       int my = cy + sin(mr) * (radius - 5);
 
-      //int sx = cx + cos(sr) * (radius - 1);
-      //int sy = cy + sin(sr) * (radius - 1);
       for (int i = 0; i < 12; i++) {
         float angle = DEG2RAD * (i * 30 - 90);
         int x1 = cx + cos(angle) * (radius - 1);
         int y1 = cy + sin(angle) * (radius - 1);
         int x2 = cx + cos(angle) * (radius - 3);
         int y2 = cy + sin(angle) * (radius - 3);
-        matrix.drawLine(x1, y1, x2, y2, matrix.color565(250, 90,10));
+        matrix.drawLine(x1, y1, x2, y2, matrix.color565(250, 90, 10));
       }
 
-      // Draw hands
-      matrix.drawLine(cx, cy, hx, hy, matrix.color565(250, 90,10));  // Hour hand - white
-      matrix.drawLine(cx, cy, mx, my, matrix.color565(250, 90,10));      // Minute hand - green
-      //matrix.drawLine(cx, cy, sx, sy, matrix.color565(255, 0, 0));      // Second hand - red
-      }
+      matrix.drawLine(cx, cy, hx, hy, matrix.color565(250, 90, 10)); // Hour hand
+      matrix.drawLine(cx, cy, mx, my, matrix.color565(250, 90, 10)); // Minute hand
 
-      matrix.show();
+    } else {
+      // No image/GIF: display centered digital time only
+      String hourStr = chicago.dateTime("g");
+      String minStr  = chicago.dateTime("i");
+      String ampmStr = chicago.dateTime("A");
+      String timeStr = hourStr + ":" + minStr + ampmStr;
+
+      matrix.setTextColor(currentTextColor);
+      int x, y;
+      getTextCenterPos(timeStr, x, y);
+      matrix.setCursor(x, y);
+      matrix.print(timeStr);
+
       lastDrawnTime = timeStr;
     }
+
+    matrix.show();
   }
 }
