@@ -1,1 +1,1 @@
-This is the code that runs on the matrix portal s3 itself to display artwork + clock. The image sent from https://github.com/singhpalwinder/shairport-metadata is received by this project 
+This is the code that runs on the matrix portal s3 itself to display artwork + clock. The image sent from <a>https://github.com/singhpalwinder/shairport-metadata</a> is received by this project 
