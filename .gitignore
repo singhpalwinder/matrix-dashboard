@@ -11,5 +11,5 @@ weatherData.json
 dev.sh
 logs
 .pio
-include
 lib
+include/secrets.h
