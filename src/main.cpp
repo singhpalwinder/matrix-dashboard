@@ -12,6 +12,7 @@
 #include "clock_view.h"
 #include "image_view.h"
 #include "transitions.h"
+#include "tetris_transition.h"
 #include "net_server.h"
 #include "prefs_store.h"
 
@@ -34,6 +35,7 @@ enum class Mode : uint8_t { DIGITAL, IMAGE_STATIC, IMAGE_GIF };
 
 static Mode     lastMode        = Mode::DIGITAL;
 static uint32_t lastRenderMs    = 0;
+static int      lastDigitalMin  = -1;
 
 static Mode currentMode() {
   if (image_view::hasGif())   return Mode::IMAGE_GIF;
@@ -54,7 +56,10 @@ static void renderForMode(Mode m, Adafruit_GFX& g) {
   switch (m) {
     case Mode::DIGITAL:
       if (haveTime) {
-        clock_view::renderDigital(g, h12, mins, am, g_textColor);
+        // Render in the tetris retro palette so the clock matches the
+        // minute-change animation's colorway immediately, not just after the
+        // first minute tick.
+        tetris_transition::renderColored(g, h12, mins, am);
       } else {
         // Time not synced yet. Show a placeholder so the display isn't blank.
         g.fillScreen(0);
@@ -109,7 +114,9 @@ void setup() {
   matrix.setTextColor(g_textColor);
 
   // Show something immediately so boot feels responsive even if WiFi is slow.
-  clock_view::renderDigital(matrix, 12, 0, true, g_textColor);
+  // Use the tetris retro palette so the very first frame matches the look of
+  // subsequent minute-change animations.
+  tetris_transition::renderColored(matrix, 12, 0, true);
   matrix.show();
 
   bool wifiOk = connectWiFi();
@@ -148,10 +155,14 @@ void loop() {
   // whatever is currently in the live framebuffer (the last rendered view),
   // so we only need to paint the destination snapshot.
   Mode nowMode = currentMode();
-  if (nowMode != lastMode && !transitions::active()) {
+  if (nowMode != lastMode && !transitions::active() &&
+      !tetris_transition::active()) {
     renderForMode(nowMode, transitions::toSurface());
     transitions::start();
     lastMode = nowMode;
+    // After a mode change the next digital render should be a clean draw, not
+    // a tetris animation against whatever pixels happen to be in the buffer.
+    lastDigitalMin = -1;
   }
 
   if (transitions::active()) {
@@ -161,14 +172,46 @@ void loop() {
     return;
   }
 
+  // Digital-mode minute change → tetris animation.
+  if (nowMode == Mode::DIGITAL && !tetris_transition::active() &&
+      timeStatus() != timeNotSet) {
+    int mins = chicago.minute();
+    if (lastDigitalMin != -1 && mins != lastDigitalMin) {
+      int  h12 = chicago.hourFormat12();
+      bool am  = chicago.hour() < 12;
+      tetris_transition::startForDigital(h12, mins, am, g_textColor);
+      lastDigitalMin = mins;
+    }
+  }
+
+  if (tetris_transition::active()) {
+    tetris_transition::step();
+    matrix.show();
+    lastRenderMs = now;
+    return;
+  }
+
   bool secondTick = (now - lastRenderMs) >= 1000;
-  if (!g_needsRedraw && !secondTick) {
+
+  // In digital mode we don't repaint every second: the minute-change tetris
+  // animation writes retro-colored pixels into the live buffer, and we want
+  // those colors to persist until the next minute. We still redraw when
+  // something changes (g_needsRedraw) or on the very first digital render.
+  bool firstDigital = (nowMode == Mode::DIGITAL && lastDigitalMin == -1 &&
+                       timeStatus() != timeNotSet);
+  bool periodicTick = secondTick && (nowMode != Mode::DIGITAL);
+
+  if (!g_needsRedraw && !firstDigital && !periodicTick) {
     delay(1);
     return;
   }
 
   renderForMode(nowMode, matrix);
   matrix.show();
+
+  if (nowMode == Mode::DIGITAL && timeStatus() != timeNotSet) {
+    lastDigitalMin = chicago.minute();
+  }
 
   lastRenderMs  = now;
   g_needsRedraw = false;
