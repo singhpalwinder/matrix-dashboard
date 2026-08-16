@@ -76,17 +76,23 @@ bool tickFrameAdvance(uint32_t nowMs) {
 }
 
 void renderImage(Adafruit_GFX& g) {
-  // Always paint the left 32x32 region so callers get a known state.
-  g.fillRect(0, 0, 32, 32, 0x0000);
-  if (!(imageLoaded || gifLoaded)) return;
+  if (!(imageLoaded || gifLoaded)) {
+    // Nothing loaded — paint a known background so callers don't see stale
+    // pixels from a prior view.
+    g.fillRect(0, 0, 32, 32, 0x0000);
+    return;
+  }
 
+  // Image fully covers the 32x32 region, so skip the clear and let the
+  // pixel writes overwrite directly. Cuts a fillRect's worth of work and
+  // narrows the mid-paint window the matrix scanout might catch.
   const uint8_t* frame = gifLoaded ? gifFrames[currentFrameIndex] : cachedImage;
   int idx = 0;
   for (int y = 0; y < FRAME_HEIGHT; y++) {
     for (int x = 0; x < FRAME_WIDTH; x++) {
       uint8_t hi = frame[idx++];
       uint8_t lo = frame[idx++];
-      g.drawPixel(x, y, (uint16_t)((hi << 8) | lo));
+      g.drawPixel(x, y, dimRGB565((uint16_t)((hi << 8) | lo)));
     }
   }
 }

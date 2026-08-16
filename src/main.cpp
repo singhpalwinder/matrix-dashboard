@@ -3,7 +3,7 @@
 #include <ezTime.h>
 #include <Adafruit_SPIFlash.h>
 #include <SdFat.h>
-#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
 
 #include "secrets.h"
 #include "config.h"
@@ -12,7 +12,7 @@
 #include "clock_view.h"
 #include "image_view.h"
 #include "transitions.h"
-#include "tetris_transition.h"
+#include "clock_anim.h"
 #include "net_server.h"
 #include "prefs_store.h"
 
@@ -36,6 +36,7 @@ enum class Mode : uint8_t { DIGITAL, IMAGE_STATIC, IMAGE_GIF };
 static Mode     lastMode        = Mode::DIGITAL;
 static uint32_t lastRenderMs    = 0;
 static int      lastDigitalMin  = -1;
+static int      lastImageMin    = -1;
 
 static Mode currentMode() {
   if (image_view::hasGif())   return Mode::IMAGE_GIF;
@@ -56,39 +57,61 @@ static void renderForMode(Mode m, Adafruit_GFX& g) {
   switch (m) {
     case Mode::DIGITAL:
       if (haveTime) {
-        // Render in the tetris retro palette so the clock matches the
-        // minute-change animation's colorway immediately, not just after the
-        // first minute tick.
-        tetris_transition::renderColored(g, h12, mins, am);
+        // Render in the active animation style's static palette so the clock
+        // matches the minute-change animation's look immediately, not just
+        // after the first minute tick.
+        clock_anim::renderColored(g, h12, mins, am);
       } else {
         // Time not synced yet. Show a placeholder so the display isn't blank.
         g.fillScreen(0);
-        g.setFont(&FreeSans9pt7b);
+        g.setFont(&FreeSans12pt7b);
         g.setTextWrap(false);
-        g.setTextColor(g_textColor);
-        g.setCursor(10, 22);
+        g.setTextColor(dimRGB565(g_textColor));
+        int16_t bx, by; uint16_t bw, bh;
+        g.getTextBounds("--:--", 0, 0, &bx, &by, &bw, &bh);
+        g.setCursor((M_W - (int)bw) / 2 - bx, (M_H - (int)bh) / 2 - by);
         g.print("--:--");
       }
       break;
 
     case Mode::IMAGE_STATIC:
     case Mode::IMAGE_GIF:
-      g.fillScreen(0);
+      // No fillScreen here: renderImage paints the full left 32x32 and
+      // renderAnalog clears+paints the full right 32x32, so a global clear
+      // is redundant and just widens the mid-frame paint window.
       image_view::renderImage(g);
       clock_view::renderAnalog(g, h12, mins);
       break;
   }
 }
 
-static bool connectWiFi() {
+static bool tryJoin(const char* ssid, const char* pass) {
+  if (!ssid || ssid[0] == '\0') return false;
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(ssid, pass);
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED &&
          (millis() - start) < WIFI_CONNECT_TIMEOUT_MS) {
     delay(200);
   }
   return WiFi.status() == WL_CONNECTED;
+}
+
+static bool connectWiFi() {
+  // Portal-saved creds take priority over the compile-time secrets so the
+  // user can reconfigure a deployed board without reflashing.
+  String savedSsid, savedPass;
+  if (loadString(KEY_WIFI_SSID, savedSsid) && savedSsid.length() > 0) {
+    loadString(KEY_WIFI_PASS, savedPass);
+    if (tryJoin(savedSsid.c_str(), savedPass.c_str())) return true;
+  }
+  return tryJoin(WIFI_SSID, WIFI_PASS);
+}
+
+static void startAccessPoint() {
+  WiFi.mode(WIFI_AP);
+  if (AP_PASS[0] == '\0') WiFi.softAP(AP_SSID);
+  else                    WiFi.softAP(AP_SSID, AP_PASS);
 }
 
 void setup() {
@@ -113,18 +136,29 @@ void setup() {
   displayBegin();
   matrix.setTextColor(g_textColor);
 
+  clock_anim::begin();
+
   // Show something immediately so boot feels responsive even if WiFi is slow.
-  // Use the tetris retro palette so the very first frame matches the look of
-  // subsequent minute-change animations.
-  tetris_transition::renderColored(matrix, 12, 0, true);
+  // Use the active animation style so the very first frame matches the look
+  // of subsequent minute-change animations.
+  clock_anim::renderColored(matrix, 12, 0, true);
   matrix.show();
+
+  // Configure an offline-usable Posix TZ up front so manual time-sets in AP
+  // mode already land in the right local zone; setLocation() overrides this
+  // with IANA data once NTP/HTTP work.
+  chicago.setPosix(TIMEZONE_POSIX);
 
   bool wifiOk = connectWiFi();
   if (wifiOk) {
     waitForSync(NTP_SYNC_TIMEOUT_S);
     chicago.setLocation(TIMEZONE);
-    netServerBegin();
+    netSetApMode(false);
+  } else {
+    startAccessPoint();
+    netSetApMode(true);
   }
+  netServerBegin();
 
   flash.begin();
   fatfs.begin(&flash);
@@ -134,6 +168,8 @@ void setup() {
 
 void loop() {
   events();  // ezTime housekeeping (NTP retries, etc.)
+
+  clock_anim::pollButtons();
 
   if (g_turnOff) {
     delay(10);
@@ -146,6 +182,11 @@ void loop() {
 
   uint32_t now = millis();
 
+  // Hoist time queries: each of these touches ezTime/now() internally,
+  // and we'd otherwise call them 3x in this loop iteration.
+  bool haveTime = (timeStatus() != timeNotSet);
+  int  curMin   = haveTime ? chicago.minute() : -1;
+
   // GIF frame advance even when idle so animation keeps playing.
   if (image_view::tickFrameAdvance(now)) {
     g_needsRedraw = true;
@@ -156,13 +197,15 @@ void loop() {
   // so we only need to paint the destination snapshot.
   Mode nowMode = currentMode();
   if (nowMode != lastMode && !transitions::active() &&
-      !tetris_transition::active()) {
+      !clock_anim::active()) {
     renderForMode(nowMode, transitions::toSurface());
     transitions::start();
     lastMode = nowMode;
-    // After a mode change the next digital render should be a clean draw, not
-    // a tetris animation against whatever pixels happen to be in the buffer.
+    // After a mode change the next digital render should be a clean draw,
+    // not a clock animation against whatever pixels happen to be in the
+    // buffer.
     lastDigitalMin = -1;
+    lastImageMin   = -1;
   }
 
   if (transitions::active()) {
@@ -172,36 +215,41 @@ void loop() {
     return;
   }
 
-  // Digital-mode minute change → tetris animation.
-  if (nowMode == Mode::DIGITAL && !tetris_transition::active() &&
-      timeStatus() != timeNotSet) {
-    int mins = chicago.minute();
-    if (lastDigitalMin != -1 && mins != lastDigitalMin) {
+  // Digital-mode minute change → kick off the active animation style.
+  if (nowMode == Mode::DIGITAL && !clock_anim::active() && haveTime) {
+    if (lastDigitalMin != -1 && curMin != lastDigitalMin) {
       int  h12 = chicago.hourFormat12();
       bool am  = chicago.hour() < 12;
-      tetris_transition::startForDigital(h12, mins, am, g_textColor);
-      lastDigitalMin = mins;
+      clock_anim::startForDigital(h12, curMin, am, g_textColor);
+      lastDigitalMin = curMin;
     }
   }
 
-  if (tetris_transition::active()) {
-    tetris_transition::step();
+  if (clock_anim::active()) {
+    clock_anim::step();
     matrix.show();
     lastRenderMs = now;
     return;
   }
-
-  bool secondTick = (now - lastRenderMs) >= 1000;
 
   // In digital mode we don't repaint every second: the minute-change tetris
   // animation writes retro-colored pixels into the live buffer, and we want
   // those colors to persist until the next minute. We still redraw when
   // something changes (g_needsRedraw) or on the very first digital render.
   bool firstDigital = (nowMode == Mode::DIGITAL && lastDigitalMin == -1 &&
-                       timeStatus() != timeNotSet);
-  bool periodicTick = secondTick && (nowMode != Mode::DIGITAL);
+                       haveTime);
 
-  if (!g_needsRedraw && !firstDigital && !periodicTick) {
+  // Image modes only need a repaint when the minute hand actually moves.
+  // GIF frame advances and uploads still set g_needsRedraw, so animation
+  // remains responsive — we just stop the wasteful 1Hz full repaint that
+  // was driving the flicker.
+  bool imageMinuteTick = false;
+  if (nowMode != Mode::DIGITAL && haveTime) {
+    if (lastImageMin == -1)            imageMinuteTick = true;  // first paint
+    else if (curMin != lastImageMin)   imageMinuteTick = true;
+  }
+
+  if (!g_needsRedraw && !firstDigital && !imageMinuteTick) {
     delay(1);
     return;
   }
@@ -209,8 +257,9 @@ void loop() {
   renderForMode(nowMode, matrix);
   matrix.show();
 
-  if (nowMode == Mode::DIGITAL && timeStatus() != timeNotSet) {
-    lastDigitalMin = chicago.minute();
+  if (haveTime) {
+    if (nowMode == Mode::DIGITAL) lastDigitalMin = curMin;
+    else                          lastImageMin   = curMin;
   }
 
   lastRenderMs  = now;

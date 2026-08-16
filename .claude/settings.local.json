@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(pio run *)",
+      "Read(//Users/paul/.platformio/penv/bin/**)",
+      "Bash(command -v platformio)",
+      "Bash(~/.platformio/penv/bin/pio run *)",
+      "Bash(curl -s \"https://learn.adafruit.com/adafruit-matrixportal-s3/pinouts\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/adafruit/Adafruit-MatrixPortal-S3-PCB/main/Adafruit%20MatrixPortal%20S3.pdf\" -o /tmp/mps3.pdf -L)",
+      "Read(//tmp/**)"
     ]
   }
 }

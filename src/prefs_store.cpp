@@ -23,3 +23,31 @@ void saveColor(const char* key, uint16_t color) {
   prefs.putUShort(key, color);
   prefs.end();
 }
+
+bool loadString(const char* key, String& out) {
+  prefs.begin("matrix", true);
+  bool has = prefs.isKey(key);
+  if (has) out = prefs.getString(key, "");
+  prefs.end();
+  return has;
+}
+
+void saveString(const char* key, const String& value) {
+  prefs.begin("matrix", false);
+  prefs.putString(key, value);
+  prefs.end();
+}
+
+bool loadU8(const char* key, uint8_t& out) {
+  prefs.begin("matrix", true);
+  bool has = prefs.isKey(key);
+  if (has) out = prefs.getUChar(key, out);
+  prefs.end();
+  return has;
+}
+
+void saveU8(const char* key, uint8_t value) {
+  prefs.begin("matrix", false);
+  prefs.putUChar(key, value);
+  prefs.end();
+}

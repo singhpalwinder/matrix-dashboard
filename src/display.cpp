@@ -1,7 +1,7 @@
 #include "display.h"
-#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
 
-uint8_t rgbPins[6]  = {42, 40, 41, 38, 37, 39};
+uint8_t rgbPins[6]  = {42, 41, 40, 38, 39, 37};
 uint8_t addrPins[5] = {45, 36, 48, 35, 21};
 
 Adafruit_Protomatter matrix(
@@ -10,7 +10,14 @@ Adafruit_Protomatter matrix(
 );
 
 void displayBegin() {
-  matrix.begin();
+  // begin() can silently fall back to single-buffer if memory is tight,
+  // which manifests as flicker since draws become immediately visible.
+  // Surface a non-OK status so it's diagnosable from serial.
+  ProtomatterStatus st = matrix.begin();
+  if (st != PROTOMATTER_OK) {
+    Serial.print("Protomatter begin failed, status=");
+    Serial.println((int)st);
+  }
   matrix.setTextWrap(false);
-  matrix.setFont(&FreeSans9pt7b);
+  matrix.setFont(&FreeSans12pt7b);
 }

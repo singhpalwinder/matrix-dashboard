@@ -2,7 +2,8 @@
 #include "config.h"
 #include "display.h"
 #include <Adafruit_GFX.h>
-#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/Picopixel.h>
 #include <Arduino.h>
 #include <string.h>
 
@@ -157,7 +158,8 @@ static bool tryFit(const uint8_t* src, int ax, int ay, const Shape& s,
   return true;
 }
 
-static void buildPieces(const uint8_t* src, bool fallingOut) {
+static void buildPieces(const uint8_t* src, bool fallingOut,
+                        const uint16_t* colorSrc) {
   memset(claimed, 0, sizeof(claimed));
   for (int y = 0; y < M_H; ++y) {
     for (int x = 0; x < M_W; ++x) {
@@ -183,7 +185,14 @@ static void buildPieces(const uint8_t* src, bool fallingOut) {
         mset(claimed, idx);
       }
 
-      p.color            = nextDeckColor();
+      // Falling-out pieces inherit the live pixel's existing color so the old
+      // digits don't visibly "shift" into new palette colors during the pre-
+      // fall hold. Falling-in pieces still pull fresh colors from the deck.
+      if (colorSrc) {
+        p.color = colorSrc[idx];
+      } else {
+        p.color = nextDeckColor();
+      }
       p.fall_ms_per_cell =
           (uint16_t)(FALL_MS_BASE + (xs32() % FALL_MS_JITTER));
 
@@ -212,20 +221,34 @@ static void buildPieces(const uint8_t* src, bool fallingOut) {
 // arbitrary — callers only consume the buffer as a lit/unlit mask.
 static void renderTargetCanvas(int hour12, int minute, bool am) {
   targetCanvas.fillScreen(0x0000);
-  targetCanvas.setFont(&FreeSans9pt7b);
   targetCanvas.setTextWrap(false);
   targetCanvas.setTextColor(0xFFFF);
 
-  char buf[12];
-  snprintf(buf, sizeof(buf), "%d:%02d%s", hour12, minute, am ? "AM" : "PM");
+  // "h:mm" big — regular weight (1px strokes survive 2x2 brick chunking
+  // cleaner than bold's 2px strokes did).
+  targetCanvas.setFont(&FreeSans12pt7b);
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%d:%02d", hour12, minute);
 
+  constexpr int RESERVE_RIGHT = 12;  // for AM/PM badge
   int16_t bx, by;
   uint16_t bw, bh;
   targetCanvas.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
-  int tx = (M_W - (int)bw) / 2 - 2;
-  int ty = (M_H + (int)bh) / 2 - 2;
+  // Subtract bx (not a magic 2) so glyphs whose bounds start at non-zero
+  // offsets — e.g. the "1" in "10:00" — don't get clipped off the left.
+  int tx = ((M_W - RESERVE_RIGHT) - (int)bw) / 2 - bx;
+  int ty = (M_H - (int)bh) / 2 - by;
   targetCanvas.setCursor(tx, ty);
   targetCanvas.print(buf);
+
+  // "AM"/"PM" tiny, right-aligned, vertically centered.
+  targetCanvas.setFont(&Picopixel);
+  const char* meridian = am ? "AM" : "PM";
+  targetCanvas.getTextBounds(meridian, 0, 0, &bx, &by, &bw, &bh);
+  int mx = M_W - 1 - (int)bw - bx;
+  int my = (M_H - (int)bh) / 2 - by;
+  targetCanvas.setCursor(mx, my);
+  targetCanvas.print(meridian);
 }
 
 void startForDigital(int hour12, int minute, bool am, uint16_t /*textColor*/) {
@@ -248,8 +271,8 @@ void startForDigital(int hour12, int minute, bool am, uint16_t /*textColor*/) {
   numPieces = 0;
   xs ^= millis();
 
-  buildPieces(outMask, true);
-  buildPieces(inMask,  false);
+  buildPieces(outMask, true,  live);     // out pieces keep their existing colors
+  buildPieces(inMask,  false, nullptr);   // in pieces draw from the palette deck
 
   startMs  = millis();
   isActive = true;
