@@ -32,10 +32,14 @@ bool loadString(const char* key, String& out) {
   return has;
 }
 
-void saveString(const char* key, const String& value) {
-  prefs.begin("matrix", false);
+bool saveString(const char* key, const String& value) {
+  if (!prefs.begin("matrix", false)) return false;
+  // putString returns 0 both on failure and for an empty value, so verify
+  // by reading it back instead.
   prefs.putString(key, value);
+  bool ok = prefs.getString(key, "\x01") == value;
   prefs.end();
+  return ok;
 }
 
 bool loadU8(const char* key, uint8_t& out) {

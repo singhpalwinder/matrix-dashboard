@@ -61,9 +61,7 @@ static bool parseQueryString(const String& req, const char* key, String& out) {
 
 void applySleep(bool off) {
   if (off && !g_turnOff) {
-    matrix.fillScreen(0);
-    matrix.show();
-    g_turnOff = true;
+    g_turnOff = true;  // loop() blanks the panel
   } else if (!off && g_turnOff) {
     g_turnOff = false;
     g_needsRedraw = true;
@@ -193,9 +191,15 @@ static void handleHttp(WiFiClient& c) {
     String ssid, pass;
     bool hasSsid = parseQueryString(req, "ssid", ssid);
     parseQueryString(req, "pass", pass);
-    if (hasSsid && ssid.length() > 0) {
-      saveString(KEY_WIFI_SSID, ssid);
-      saveString(KEY_WIFI_PASS, pass);
+    // iOS/macOS autofill can leave a trailing space or newline on the SSID.
+    ssid.trim();
+    bool saved = hasSsid && ssid.length() > 0 &&
+                 saveString(KEY_WIFI_SSID, ssid) &&
+                 saveString(KEY_WIFI_PASS, pass);
+    if (hasSsid && ssid.length() > 0 && !saved) {
+      c.print(F("HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n"
+                "Connection: close\r\n\r\nCould not save WiFi settings; not restarting."));
+    } else if (saved) {
       c.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                 "Connection: close\r\n\r\n"
                 "<!doctype html><meta charset=\"utf-8\">"
@@ -270,12 +274,18 @@ static void handleImageUpload(WiFiClient& c) {
 
   image_view::beginUpload();
 
-  while (c.connected()) {
+  // Keep draining after the sender closes (connected() can go false with
+  // bytes still buffered), and give up on a stalled client instead of
+  // freezing the display with g_uploadInProgress held forever.
+  uint32_t lastData = millis();
+  while (c.connected() || c.available() > 0) {
     int avail = c.available();
     if (avail <= 0) {
+      if (millis() - lastData > 3000) break;
       delay(1);
       continue;
     }
+    lastData = millis();
     while (avail > 0) {
       int chunk = avail > NET_BUF_SIZE ? NET_BUF_SIZE : avail;
       int n = c.read(netBuf, chunk);

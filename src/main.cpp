@@ -88,6 +88,11 @@ static void renderForMode(Mode m, Adafruit_GFX& g) {
 
 static bool tryJoin(const char* ssid, const char* pass) {
   if (!ssid || ssid[0] == '\0') return false;
+  // Drop any in-flight attempt first: calling begin() while the stack is
+  // still connecting (to a previous network, or the core's own auto-connect)
+  // fails, which used to push a working fallback network into AP mode.
+  WiFi.disconnect(false, false);
+  delay(100);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, pass);
   uint32_t start = millis();
@@ -99,6 +104,12 @@ static bool tryJoin(const char* ssid, const char* pass) {
 }
 
 static bool connectWiFi() {
+  // Credentials live only in our "matrix" prefs. Stop the WiFi core from
+  // keeping its own copy in NVS and auto-connecting to it at boot, which
+  // raced the begin() below and could join (or keep retrying) a stale network.
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
+
   // Portal-saved creds take priority over the compile-time secrets so the
   // user can reconfigure a deployed board without reflashing.
   String savedSsid, savedPass;
@@ -110,9 +121,46 @@ static bool connectWiFi() {
 }
 
 static void startAccessPoint() {
-  WiFi.mode(WIFI_AP);
+  WiFi.disconnect(false, false);
+  // AP+STA so loop() can keep trying the configured network in the
+  // background; previously a router that booted slower than us left the
+  // board stuck in AP mode until a manual power cycle.
+  WiFi.mode(WIFI_AP_STA);
   if (AP_PASS[0] == '\0') WiFi.softAP(AP_SSID);
   else                    WiFi.softAP(AP_SSID, AP_PASS);
+}
+
+static bool     g_inApMode       = false;
+static uint32_t lastStaRetryMs   = 0;
+static uint8_t  staRetryIdx      = 0;
+constexpr uint32_t STA_RETRY_MS  = 30000;
+
+// Non-blocking: alternates saved and compile-time creds every STA_RETRY_MS.
+// Skipped while a phone is on the AP (a STA connect can change the radio
+// channel and kick it off mid-configuration).
+static void retryStaFromAp(uint32_t now) {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    g_inApMode = false;
+    netSetApMode(false);
+    waitForSync(NTP_SYNC_TIMEOUT_S);
+    chicago.setLocation(TIMEZONE);
+    g_needsRedraw = true;
+    return;
+  }
+  if (now - lastStaRetryMs < STA_RETRY_MS) return;
+  lastStaRetryMs = now;
+  if (WiFi.softAPgetStationNum() > 0) return;
+
+  String ssid, pass;
+  bool useSaved = (staRetryIdx++ % 2 == 0) &&
+                  loadString(KEY_WIFI_SSID, ssid) && ssid.length() > 0;
+  if (useSaved) loadString(KEY_WIFI_PASS, pass);
+  else { ssid = WIFI_SSID; pass = WIFI_PASS; }
+  if (ssid.length() == 0) return;
+  WiFi.disconnect(false, false);
+  WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
 void setup() {
@@ -159,6 +207,8 @@ void setup() {
   } else {
     startAccessPoint();
     netSetApMode(true);
+    g_inApMode = true;
+    lastStaRetryMs = millis();
   }
   netServerBegin();
 
@@ -173,10 +223,21 @@ void loop() {
 
   clock_anim::pollButtons();
 
+  if (g_inApMode) retryStaFromAp(millis());
+
+  // Sleep is requested from the server task; clear the panel here so only
+  // this task ever touches the framebuffer.
+  static bool sleepCleared = false;
   if (g_turnOff) {
+    if (!sleepCleared) {
+      matrix.fillScreen(0);
+      matrix.show();
+      sleepCleared = true;
+    }
     delay(10);
     return;
   }
+  sleepCleared = false;
   if (g_uploadInProgress || g_processingRequest) {
     delay(1);
     return;
