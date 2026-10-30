@@ -14,6 +14,7 @@
 #include "transitions.h"
 #include "clock_anim.h"
 #include "net_server.h"
+#include "mqtt_client.h"
 #include "prefs_store.h"
 
 // Shared state definitions. See app_state.h for the contract.
@@ -154,6 +155,7 @@ void setup() {
     waitForSync(NTP_SYNC_TIMEOUT_S);
     chicago.setLocation(TIMEZONE);
     netSetApMode(false);
+    mqttBegin();
   } else {
     startAccessPoint();
     netSetApMode(true);

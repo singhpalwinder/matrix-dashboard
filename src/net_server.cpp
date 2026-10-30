@@ -1,4 +1,5 @@
 #include "net_server.h"
+#include "mqtt_client.h"
 #include "config.h"
 #include "app_state.h"
 #include "display.h"
@@ -58,7 +59,7 @@ static bool parseQueryString(const String& req, const char* key, String& out) {
   return true;
 }
 
-static void applySleep(bool off) {
+void applySleep(bool off) {
   if (off && !g_turnOff) {
     matrix.fillScreen(0);
     matrix.show();
@@ -297,6 +298,8 @@ static void serverTask(void*) {
 
     WiFiClient img = imageServer.available();
     if (img) handleImageUpload(img);
+
+    mqttLoop();
 
     vTaskDelay(5 / portTICK_PERIOD_MS);
   }
