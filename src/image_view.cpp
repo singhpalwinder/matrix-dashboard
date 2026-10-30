@@ -92,7 +92,10 @@ void renderImage(Adafruit_GFX& g) {
     for (int x = 0; x < FRAME_WIDTH; x++) {
       uint8_t hi = frame[idx++];
       uint8_t lo = frame[idx++];
-      g.drawPixel(x, y, dimRGB565((uint16_t)((hi << 8) | lo)));
+      // Not dimmed here: the sender already scales artwork to the panel's
+      // budget with rounding. dimRGB565 truncates, which on dark covers threw
+      // away most of the 5/6-bit levels and left lone red LEDs in shadows.
+      g.drawPixel(x, y, (uint16_t)((hi << 8) | lo));
     }
   }
 }
