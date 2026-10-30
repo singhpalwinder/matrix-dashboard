@@ -146,6 +146,7 @@ static void retryStaFromAp(uint32_t now) {
     netSetApMode(false);
     waitForSync(NTP_SYNC_TIMEOUT_S);
     chicago.setLocation(TIMEZONE);
+    mqttBegin();
     g_needsRedraw = true;
     return;
   }
