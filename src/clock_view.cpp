@@ -1,7 +1,7 @@
 #include "clock_view.h"
 #include "config.h"
-#include <Fonts/FreeSans12pt7b.h>
-#include <Fonts/Picopixel.h>
+#include "digits6x11.h"
+#include <string.h>
 #include <math.h>
 
 namespace clock_view {
@@ -77,33 +77,95 @@ void renderAnalog(Adafruit_GFX& g, int hour12, int minute) {
   g.drawLine(CLOCK_CX, CLOCK_CY, mx, my, handCol);
 }
 
-void renderDigital(Adafruit_GFX& g, int hour12, int minute, bool am, uint16_t textColor) {
-  char timeBuf[8];
-  snprintf(timeBuf, sizeof(timeBuf), "%d:%02d", hour12, minute);
+static char g_date[16] = "";
+static bool g_compact = false;
 
-  g.fillScreen(COL_BG);
+void setCompact(bool compact) { g_compact = compact; }
+
+void setDate(const char* text) {
+  strncpy(g_date, text ? text : "", sizeof(g_date) - 1);
+  g_date[sizeof(g_date) - 1] = 0;
+}
+
+static void timeString(char* buf, size_t n, int hour12, int minute) {
+  if (hour12 < 0) snprintf(buf, n, "--:--");
+  else            snprintf(buf, n, "%d:%02d", hour12, minute);
+}
+
+// Width of a Digits6x11 string at 1x: sum of advances minus the trailing gap.
+static int digitsWidth(const char* s) {
+  int w = 0;
+  for (; *s; ++s) {
+    uint8_t c = (uint8_t)*s;
+    if (c < Digits6x11.first || c > Digits6x11.last) continue;
+    w += pgm_read_byte(&Digits6x11Glyphs[c - Digits6x11.first].xAdvance);
+  }
+  return w > 0 ? w - 1 : 0;
+}
+
+static void printDigits(Adafruit_GFX& g, const char* s, int x, int top, int scale, uint16_t color) {
+  g.setFont(&Digits6x11);
+  g.setTextSize(scale);
   g.setTextWrap(false);
-  g.setTextColor(textColor);
+  g.setTextColor(color);
+  g.setCursor(x, top + 11 * scale);  // cursor sits on the baseline (bottom row + 1)
+  g.print(s);
+  g.setTextSize(1);
+  g.setFont(nullptr);
+}
 
-  g.setFont(&FreeSans12pt7b);
-  constexpr int RESERVE_RIGHT = 12;
-  int16_t x1, y1;
-  uint16_t w, h;
-  g.getTextBounds(timeBuf, 0, 0, &x1, &y1, &w, &h);
-  // Subtract x1 (not a magic 2) so glyphs with non-zero bearing — e.g. the
-  // "1" in "10:00" — don't get clipped off the left.
-  int tx = ((M_W - RESERVE_RIGHT) - (int)w) / 2 - x1;
-  int ty = (M_H - (int)h) / 2 - y1;
-  g.setCursor(tx, ty);
-  g.print(timeBuf);
+// Layout. Compact (Pi tiles showing): time 1x in the top-left quarter, date across
+// the middle. Big: time 2x (12x22) at the top, date along the bottom.
+static constexpr int COMPACT_DATE_Y = 14;
+static constexpr int BIG_DATE_Y     = 24;
 
-  g.setFont(&Picopixel);
-  const char* meridian = am ? "AM" : "PM";
-  g.getTextBounds(meridian, 0, 0, &x1, &y1, &w, &h);
-  int mx = M_W - 1 - (int)w - x1;
-  int my = (M_H - (int)h) / 2 - y1;
-  g.setCursor(mx, my);
-  g.print(meridian);
+static bool hasDate() { return g_date[0] != 0; }
+
+void drawTime(Adafruit_GFX& g, int hour12, int minute, uint16_t color) {
+  char buf[8];
+  timeString(buf, sizeof(buf), hour12, minute);
+  if (g_compact) {
+    printDigits(g, buf, (32 - digitsWidth(buf)) / 2, 1, 1, color);
+    return;
+  }
+  constexpr int SCALE = 2;
+  bool withDate = hasDate() && hour12 >= 0;
+  int top = withDate ? 1 : (M_H - 11 * SCALE) / 2;
+  printDigits(g, buf, (M_W - digitsWidth(buf) * SCALE) / 2, top, SCALE, color);
+}
+
+void drawDate(Adafruit_GFX& g, uint16_t color) {
+  if (!hasDate()) return;
+  // Built-in 5x7 font: 6px per character, 7 rows tall.
+  int dw = (int)strlen(g_date) * 6 - 1;
+  g.setFont(nullptr);
+  g.setTextSize(1);
+  g.setTextWrap(false);
+  g.setTextColor(color);
+  g.setCursor((M_W - dw) / 2, g_compact ? COMPACT_DATE_Y : BIG_DATE_Y);
+  g.print(g_date);
+}
+
+bool inTimeArea(int x, int y) {
+  if (g_compact) return x < 32 && y < COMPACT_DATE_Y - 1;
+  return y < BIG_DATE_Y - 1;
+}
+
+void drawFace(Adafruit_GFX& g, int hour12, int minute, uint16_t color) {
+  drawTime(g, hour12, minute, color);
+  if (hour12 >= 0) drawDate(g, color);
+}
+
+void drawTimeSmall(Adafruit_GFX& g, int x0, int x1, int y, int hour12, int minute, uint16_t color) {
+  char buf[8];
+  timeString(buf, sizeof(buf), hour12, minute);
+  int w = digitsWidth(buf);
+  printDigits(g, buf, x0 + (x1 - x0 + 1 - w) / 2, y, 1, color);
+}
+
+void renderDigital(Adafruit_GFX& g, int hour12, int minute, bool /*am*/, uint16_t textColor) {
+  g.fillScreen(COL_BG);
+  drawFace(g, hour12, minute, textColor);
 }
 
 }  // namespace clock_view

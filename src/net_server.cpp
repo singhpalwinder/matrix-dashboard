@@ -7,6 +7,8 @@
 #include "clock_view.h"
 #include "prefs_store.h"
 #include "ota.h"
+#include "audio_levels.h"
+#include "clips.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -203,13 +205,12 @@ static void handleHttp(WiFiClient& c) {
     sendPortal(c);
     handled = true;
   } else if (req.startsWith("POST /ota ")) {
-    g_uploadInProgress = true;  // Pause rendering while flash is written.
+    // The render loop shows the update screen while ota::phase() is active.
     const char* err = ota::receive(c, contentLength, signature);
     if (err) {
       c.print(F("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n"
                 "Content-Type: text/plain\r\n\r\n"));
       c.print(err);
-      g_uploadInProgress = false;
     } else {
       c.print(F("HTTP/1.1 200 OK\r\nConnection: close\r\n"
                 "Content-Type: text/plain\r\n\r\nOK, rebooting"));
@@ -219,6 +220,16 @@ static void handleHttp(WiFiClient& c) {
       ESP.restart();
       return;  // unreachable
     }
+    handled = true;
+  } else if (req.startsWith("POST /clip ")) {
+    const char* err = clips::receive(c, contentLength);
+    c.print(err ? F("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n")
+                : F("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nOK"));
+    if (err) c.print(err);
+    handled = true;
+  } else if (req.startsWith("GET /clips")) {
+    c.print(F("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n"));
+    c.print(clips::status());
     handled = true;
   } else if (req.startsWith("GET /version")) {
     c.print(F("HTTP/1.1 200 OK\r\nConnection: close\r\n"
@@ -347,6 +358,7 @@ static void serverTask(void*) {
     if (img) handleImageUpload(img);
 
     mqttLoop();
+    audio_levels::poll();
 
     vTaskDelay(5 / portTICK_PERIOD_MS);
   }
@@ -355,6 +367,7 @@ static void serverTask(void*) {
 void netServerBegin() {
   httpServer.begin();
   imageServer.begin();
+  audio_levels::begin();
 
   xTaskCreatePinnedToCore(
     serverTask,

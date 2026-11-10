@@ -3,7 +3,6 @@
 #include <ezTime.h>
 #include <Adafruit_SPIFlash.h>
 #include <SdFat.h>
-#include <Fonts/FreeSans12pt7b.h>
 
 #include "secrets.h"
 #include "config.h"
@@ -16,6 +15,10 @@
 #include "net_server.h"
 #include "mqtt_client.h"
 #include "prefs_store.h"
+#include "now_playing.h"
+#include "clips.h"
+#include "ota.h"
+#include "ota_view.h"
 
 // Shared state definitions. See app_state.h for the contract.
 volatile bool     g_needsRedraw       = false;
@@ -62,20 +65,18 @@ static void renderForMode(Mode m, Adafruit_GFX& g) {
         // matches the minute-change animation's look immediately, not just
         // after the first minute tick.
         clock_anim::renderColored(g, h12, mins, am);
+        clock_view::drawDate(g, dimRGB565(g_textColor));
       } else {
         // Time not synced yet. Show a placeholder so the display isn't blank.
         g.fillScreen(0);
-        g.setFont(&FreeSans12pt7b);
-        g.setTextWrap(false);
-        g.setTextColor(dimRGB565(g_textColor));
-        int16_t bx, by; uint16_t bw, bh;
-        g.getTextBounds("--:--", 0, 0, &bx, &by, &bw, &bh);
-        g.setCursor((M_W - (int)bw) / 2 - bx, (M_H - (int)bh) / 2 - by);
-        g.print("--:--");
+        clock_view::drawFace(g, -1, 0, dimRGB565(g_textColor));
       }
       break;
 
     case Mode::IMAGE_STATIC:
+      now_playing::render(g, h12, mins, millis());
+      break;
+
     case Mode::IMAGE_GIF:
       // No fillScreen here: renderImage paints the full left 32x32 and
       // renderAnalog clears+paints the full right 32x32, so a global clear
@@ -84,6 +85,13 @@ static void renderForMode(Mode m, Adafruit_GFX& g) {
       clock_view::renderAnalog(g, h12, mins);
       break;
   }
+}
+
+// "WED NOV 11" under the digital clock; refreshed when the minute changes.
+static void updateDate() {
+  String d = chicago.dateTime("D M j");
+  d.toUpperCase();
+  clock_view::setDate(d.c_str());
 }
 
 static bool tryJoin(const char* ssid, const char* pass) {
@@ -211,6 +219,7 @@ void setup() {
     g_inApMode = true;
     lastStaRetryMs = millis();
   }
+  clips::begin();
   netServerBegin();
 
   flash.begin();
@@ -239,6 +248,31 @@ void loop() {
     return;
   }
   sleepCleared = false;
+
+  // Firmware update: the update screen owns the panel until it finishes or fails.
+  // Checked before the request gate below, since the update runs inside a request.
+  static bool otaShown = false;
+  if (ota_view::active()) {
+    static uint32_t lastOtaFrame = 0;
+    uint32_t t = millis();
+    if (!otaShown || t - lastOtaFrame >= 33) {
+      uint8_t drawn = ota_view::render(matrix, t);
+      matrix.show();
+      ota::ackShown((ota::Phase)drawn);
+      lastOtaFrame = t;
+      otaShown = true;
+    }
+    delay(1);
+    return;
+  }
+  if (otaShown) {  // update failed and the screen timed out: repaint the normal view
+    otaShown = false;
+    lastMode = Mode::DIGITAL;
+    lastDigitalMin = -1;
+    lastImageMin = -1;
+    g_needsRedraw = true;
+  }
+
   if (g_uploadInProgress || g_processingRequest) {
     delay(1);
     return;
@@ -250,6 +284,18 @@ void loop() {
   // and we'd otherwise call them 3x in this loop iteration.
   bool haveTime = (timeStatus() != timeNotSet);
   int  curMin   = haveTime ? chicago.minute() : -1;
+
+  // Pi clips (weather tile) appeared, changed or expired: relayout the clock face.
+  if (clips::takeChanged()) {
+    clock_view::setCompact(clips::anyActive(now));
+    g_needsRedraw = true;
+  }
+
+  static int dateMin = -2;
+  if (haveTime && curMin != dateMin) {
+    updateDate();
+    dateMin = curMin;
+  }
 
   // GIF frame advance even when idle so animation keeps playing.
   if (image_view::tickFrameAdvance(now)) {
@@ -291,6 +337,9 @@ void loop() {
 
   if (clock_anim::active()) {
     clock_anim::step();
+    // The animation repaints the whole buffer; the date and Pi tiles sit on top, unmoved.
+    clock_view::drawDate(matrix, dimRGB565(g_textColor));
+    if (nowMode == Mode::DIGITAL) clips::draw(matrix, now, true);
     matrix.show();
     lastRenderMs = now;
     return;
@@ -313,12 +362,21 @@ void loop() {
     else if (curMin != lastImageMin)   imageMinuteTick = true;
   }
 
-  if (!g_needsRedraw && !firstDigital && !imageMinuteTick) {
+  // The now-playing view animates (spinning record, bars), so it redraws at ~30 fps.
+  bool nowPlayingFrame = (nowMode == Mode::IMAGE_STATIC && now - lastRenderMs >= 33);
+
+  // Pi clips loop on their own clock; push a frame only when one of them advanced.
+  if (nowMode == Mode::DIGITAL && !g_needsRedraw && clips::draw(matrix, now, false)) {
+    matrix.show();
+  }
+
+  if (!g_needsRedraw && !firstDigital && !imageMinuteTick && !nowPlayingFrame) {
     delay(1);
     return;
   }
 
   renderForMode(nowMode, matrix);
+  if (nowMode == Mode::DIGITAL) clips::draw(matrix, now, true);
   matrix.show();
 
   if (haveTime) {

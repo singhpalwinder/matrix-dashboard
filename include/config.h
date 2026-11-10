@@ -61,6 +61,7 @@ constexpr const char* TIMEZONE_POSIX = "CST6CDT,M3.2.0,M11.1.0";
 // Net ports
 constexpr uint16_t HTTP_PORT     = 80;
 constexpr uint16_t IMAGE_PORT    = 9090;
+constexpr uint16_t AUDIO_PORT    = 9091;  // UDP spectrum levels from the Pi
 
 // AP fallback — used when we can't join a configured WiFi network, so the
 // user can still reach the portal to enter credentials or set the time.

@@ -14,6 +14,7 @@ static          uint32_t lastFrameSwitchMs = 0;
 
 static volatile bool gifLoaded   = false;
 static volatile bool imageLoaded = false;
+static volatile uint32_t generation = 0;
 
 // Upload accounting
 static int      uploadFrame = 0;
@@ -51,6 +52,7 @@ void endUpload() {
     imageLoaded = false;
   } else if (frames == 1 || idx == FRAME_SIZE) {
     memcpy(cachedImage, gifFrames[0], FRAME_SIZE);
+    generation++;
     totalFrames = 1;
     imageLoaded = true;
     gifLoaded   = false;
@@ -59,6 +61,9 @@ void endUpload() {
 
 bool hasImage() { return imageLoaded || gifLoaded; }
 bool hasGif()   { return gifLoaded; }
+
+const uint8_t* staticImage() { return (imageLoaded && !gifLoaded) ? cachedImage : nullptr; }
+uint32_t imageGeneration() { return generation; }
 
 void reset() {
   imageLoaded = false;
