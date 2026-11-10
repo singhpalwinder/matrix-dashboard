@@ -1,0 +1,124 @@
+name: OTA Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'platformio.ini'
+      - 'scripts/**'
+      - '.github/workflows/ota.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ota-matrix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build, Sign & Flash
+    runs-on: ubuntu-latest
+    # All secrets live in the main environment, which only the main branch can deploy to.
+    environment: main
+    env:
+      PIO_ENV: adafruit_matrixportal_esp32s3
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set Version
+        run: echo "FW_VERSION=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      # Toolchains only; never cache .pio/build since the binary embeds WiFi/MQTT creds.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Write secrets.h
+        env:
+          WIFI_SSID: ${{ secrets.WIFI_SSID }}
+          WIFI_PASS: ${{ secrets.WIFI_PASS }}
+          MQTT_HOST: ${{ secrets.MQTT_HOST }}
+          MQTT_PORT: ${{ secrets.MQTT_PORT }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASS: ${{ secrets.MQTT_PASS }}
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import json, os
+          q = lambda k: json.dumps(os.environ.get(k, ""), ensure_ascii=False)
+          port = os.environ.get("MQTT_PORT") or "1883"
+          assert port.isdigit(), "MQTT_PORT must be numeric"
+          with open("include/secrets.h", "w") as f:
+              f.write("#pragma once\n")
+              for k in ("WIFI_SSID", "WIFI_PASS", "MQTT_HOST", "MQTT_USER", "MQTT_PASS"):
+                  f.write(f"#define {k} {q(k)}\n")
+              f.write(f"#define MQTT_PORT {port}\n")
+          PY
+
+      - name: Build Firmware
+        run: pio run -e "$PIO_ENV"
+
+      - name: Sign Firmware
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          umask 077
+          BIN=".pio/build/$PIO_ENV/firmware.bin"
+          printf '%s\n' "$OTA_SIGNING_KEY" > "$RUNNER_TEMP/ota_key.pem"
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/ota_key.pem" -out "$RUNNER_TEMP/firmware.sig" "$BIN"
+          rm -f "$RUNNER_TEMP/ota_key.pem"
+          # Fail here, not on the board, if the secret doesn't match the committed public key.
+          sed -n '/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p' include/ota_pubkey.h > "$RUNNER_TEMP/ota_pub.pem"
+          openssl dgst -sha256 -verify "$RUNNER_TEMP/ota_pub.pem" -signature "$RUNNER_TEMP/firmware.sig" "$BIN"
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # The Pi is only a LAN jump host: the image is piped through SSH into curl, nothing is stored there.
+      - name: Push to Board
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          MATRIX_HOST: ${{ secrets.MATRIX_HOST }}
+        run: |
+          SIG=$(base64 -w0 "$RUNNER_TEMP/firmware.sig")
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes "$SSH_USER@$SSH_HOST" \
+            "curl -fsS --max-time 120 -H 'Expect:' -H 'X-Signature: $SIG' --data-binary @- http://$MATRIX_HOST/ota" \
+            < ".pio/build/$PIO_ENV/firmware.bin"
+
+      - name: Verify Version
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          MATRIX_HOST: ${{ secrets.MATRIX_HOST }}
+        run: |
+          for i in $(seq 1 30); do
+            v=$(ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes "$SSH_USER@$SSH_HOST" \
+                  "curl -fsS --max-time 3 http://$MATRIX_HOST/version" || true)
+            if [ "$v" = "$FW_VERSION" ]; then echo "Board running $v"; exit 0; fi
+            sleep 5
+          done
+          echo "Board did not report $FW_VERSION (last: '$v')"; exit 1

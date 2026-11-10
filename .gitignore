@@ -13,3 +13,6 @@ logs
 .pio
 lib
 include/secrets.h
+# OTA signing keys and signatures
+*.pem
+*.sig

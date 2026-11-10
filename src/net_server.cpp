@@ -6,6 +6,7 @@
 #include "image_view.h"
 #include "clock_view.h"
 #include "prefs_store.h"
+#include "ota.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -176,16 +177,52 @@ static void sendPortal(WiFiClient& c) {
 static void handleHttp(WiFiClient& c) {
   g_processingRequest = true;
 
-  String req = c.readStringUntil('\r');
+  // Consume the full request line so the header loop starts on the first header.
+  String req = c.readStringUntil('\n');
+  req.trim();
+  size_t contentLength = 0;
+  String signature;
   while (c.connected()) {
     String line = c.readStringUntil('\n');
     if (line.length() <= 2) break;
+    // Keep only the headers the OTA route needs.
+    int colon = line.indexOf(':');
+    if (colon < 0) continue;
+    String name = line.substring(0, colon);
+    name.trim();
+    name.toLowerCase();
+    String value = line.substring(colon + 1);
+    value.trim();
+    if (name == "content-length")   contentLength = value.toInt();
+    else if (name == "x-signature") signature = value;
   }
 
   bool handled = false;
 
   if (req.indexOf("GET / ") >= 0 || req.indexOf("GET /index") >= 0) {
     sendPortal(c);
+    handled = true;
+  } else if (req.startsWith("POST /ota ")) {
+    g_uploadInProgress = true;  // Pause rendering while flash is written.
+    const char* err = ota::receive(c, contentLength, signature);
+    if (err) {
+      c.print(F("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n"
+                "Content-Type: text/plain\r\n\r\n"));
+      c.print(err);
+      g_uploadInProgress = false;
+    } else {
+      c.print(F("HTTP/1.1 200 OK\r\nConnection: close\r\n"
+                "Content-Type: text/plain\r\n\r\nOK, rebooting"));
+      c.flush();
+      c.stop();
+      delay(500);
+      ESP.restart();
+      return;  // unreachable
+    }
+    handled = true;
+  } else if (req.startsWith("GET /version")) {
+    c.print(F("HTTP/1.1 200 OK\r\nConnection: close\r\n"
+              "Content-Type: text/plain\r\n\r\n" FW_VERSION));
     handled = true;
   } else if (req.indexOf("GET /wifi?") >= 0) {
     String ssid, pass;
