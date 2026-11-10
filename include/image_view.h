@@ -22,4 +22,9 @@ bool hasGif();
 
 void reset();      // clears both static image and GIF state
 
+// The static cover as 32x32 big-endian RGB565, or nullptr when none is loaded.
+const uint8_t* staticImage();
+// Bumps every time a new static cover lands, so views can recompute colors.
+uint32_t imageGeneration();
+
 }  // namespace image_view

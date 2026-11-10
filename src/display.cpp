@@ -1,5 +1,4 @@
 #include "display.h"
-#include <Fonts/FreeSans12pt7b.h>
 
 uint8_t rgbPins[6]  = {42, 41, 40, 38, 39, 37};
 uint8_t addrPins[5] = {45, 36, 48, 35, 21};
@@ -19,5 +18,4 @@ void displayBegin() {
     Serial.println((int)st);
   }
   matrix.setTextWrap(false);
-  matrix.setFont(&FreeSans12pt7b);
 }

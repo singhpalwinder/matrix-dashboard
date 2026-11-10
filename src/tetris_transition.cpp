@@ -1,9 +1,8 @@
 #include "tetris_transition.h"
 #include "config.h"
 #include "display.h"
+#include "clock_view.h"
 #include <Adafruit_GFX.h>
-#include <Fonts/FreeSans12pt7b.h>
-#include <Fonts/Picopixel.h>
 #include <Arduino.h>
 #include <string.h>
 
@@ -83,7 +82,7 @@ struct Piece {
   bool     fallingOut;
 };
 
-static constexpr int MAX_PIECES = 260;
+static constexpr int MAX_PIECES = 400;  // out + in pieces for the 2x clock
 static Piece pieces[MAX_PIECES];
 static int   numPieces = 0;
 
@@ -219,36 +218,10 @@ static void buildPieces(const uint8_t* src, bool fallingOut,
 
 // Render the digital time into targetCanvas. The pixel color used here is
 // arbitrary — callers only consume the buffer as a lit/unlit mask.
-static void renderTargetCanvas(int hour12, int minute, bool am) {
+static void renderTargetCanvas(int hour12, int minute, bool /*am*/) {
+  // Only the lit/unlit mask matters here; the animation picks the colors.
   targetCanvas.fillScreen(0x0000);
-  targetCanvas.setTextWrap(false);
-  targetCanvas.setTextColor(0xFFFF);
-
-  // "h:mm" big — regular weight (1px strokes survive 2x2 brick chunking
-  // cleaner than bold's 2px strokes did).
-  targetCanvas.setFont(&FreeSans12pt7b);
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%d:%02d", hour12, minute);
-
-  constexpr int RESERVE_RIGHT = 12;  // for AM/PM badge
-  int16_t bx, by;
-  uint16_t bw, bh;
-  targetCanvas.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
-  // Subtract bx (not a magic 2) so glyphs whose bounds start at non-zero
-  // offsets — e.g. the "1" in "10:00" — don't get clipped off the left.
-  int tx = ((M_W - RESERVE_RIGHT) - (int)bw) / 2 - bx;
-  int ty = (M_H - (int)bh) / 2 - by;
-  targetCanvas.setCursor(tx, ty);
-  targetCanvas.print(buf);
-
-  // "AM"/"PM" tiny, right-aligned, vertically centered.
-  targetCanvas.setFont(&Picopixel);
-  const char* meridian = am ? "AM" : "PM";
-  targetCanvas.getTextBounds(meridian, 0, 0, &bx, &by, &bw, &bh);
-  int mx = M_W - 1 - (int)bw - bx;
-  int my = (M_H - (int)bh) / 2 - by;
-  targetCanvas.setCursor(mx, my);
-  targetCanvas.print(meridian);
+  clock_view::drawTime(targetCanvas, hour12, minute, 0xFFFF);
 }
 
 void startForDigital(int hour12, int minute, bool am, uint16_t /*textColor*/) {
@@ -264,7 +237,8 @@ void startForDigital(int hour12, int minute, bool am, uint16_t /*textColor*/) {
   memset(outMask, 0, sizeof(outMask));
   memset(inMask,  0, sizeof(inMask));
   for (int i = 0; i < PIX_COUNT; ++i) {
-    if (live[i] != BG) mset(outMask, i);
+    // Only the old time falls; the date and Pi tiles stay where they are.
+    if (live[i] != BG && clock_view::inTimeArea(i % M_W, i / M_W)) mset(outMask, i);
     if (tgt[i]  != BG) mset(inMask,  i);
   }
 
