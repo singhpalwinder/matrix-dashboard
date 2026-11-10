@@ -95,29 +95,26 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      # The Pi is only a LAN jump host: the image is piped through SSH into curl, nothing is stored there.
+      # The ci-deploy key is pinned to pi5's deploy-dispatch, which only runs /usr/local/lib/deploy.d/<project>.
       - name: Push to Board
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          MATRIX_HOST: ${{ secrets.MATRIX_HOST }}
         run: |
           SIG=$(base64 -w0 "$RUNNER_TEMP/firmware.sig")
           ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes "$SSH_USER@$SSH_HOST" \
-            "curl -fsS --max-time 120 -H 'Expect:' -H 'X-Signature: $SIG' --data-binary @- http://$MATRIX_HOST/ota" \
-            < ".pio/build/$PIO_ENV/firmware.bin"
+            "matrix-ota push $SIG" < ".pio/build/$PIO_ENV/firmware.bin"
 
       - name: Verify Version
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          MATRIX_HOST: ${{ secrets.MATRIX_HOST }}
         run: |
           for i in $(seq 1 30); do
             v=$(ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes "$SSH_USER@$SSH_HOST" \
-                  "curl -fsS --max-time 3 http://$MATRIX_HOST/version" || true)
+                  "matrix-ota version" || true)
             if [ "$v" = "$FW_VERSION" ]; then echo "Board running $v"; exit 0; fi
             sleep 5
           done
