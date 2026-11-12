@@ -163,6 +163,37 @@ void drawTimeSmall(Adafruit_GFX& g, int x0, int x1, int y, int hour12, int minut
   printDigits(g, buf, x0 + (x1 - x0 + 1 - w) / 2, y, 1, color);
 }
 
+// 5x7 text with a 2px space instead of a 6px one ("NOV 11" is then 31px wide).
+static constexpr int NARROW_SPACE = 2;
+
+static int narrowWidth(const char* s) {
+  int w = 0;
+  for (; *s; ++s) w += *s == ' ' ? NARROW_SPACE : 6;
+  return w > 0 ? w - 1 : 0;
+}
+
+static void printNarrow(Adafruit_GFX& g, const char* s, int x, int y, uint16_t color) {
+  g.setFont(nullptr);
+  for (; *s; ++s) {
+    if (*s == ' ') { x += NARROW_SPACE; continue; }
+    g.drawChar(x, y, *s, color, color, 1);  // bg == color: transparent background
+    x += 6;
+  }
+}
+
+void drawDateStacked(Adafruit_GFX& g, int x0, int x1, int y, uint16_t color) {
+  if (!hasDate()) return;
+  char first[sizeof(g_date)];
+  const char* sp = strchr(g_date, ' ');
+  size_t n = sp ? (size_t)(sp - g_date) : strlen(g_date);
+  memcpy(first, g_date, n);
+  first[n] = 0;
+  const char* rest = sp ? sp + 1 : "";
+  int span = x1 - x0 + 1;
+  printNarrow(g, first, x0 + (span - narrowWidth(first)) / 2, y, color);
+  printNarrow(g, rest, x0 + (span - narrowWidth(rest)) / 2, y + 9, color);
+}
+
 void renderDigital(Adafruit_GFX& g, int hour12, int minute, bool /*am*/, uint16_t textColor) {
   g.fillScreen(COL_BG);
   drawFace(g, hour12, minute, textColor);

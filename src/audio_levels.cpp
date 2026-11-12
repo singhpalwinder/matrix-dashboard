@@ -16,10 +16,13 @@ static volatile uint8_t  levels[MAX_BANDS];
 static volatile int      bands        = 0;
 static volatile uint32_t lastPacketMs = 0;
 static volatile uint32_t lastLoudMs   = 0;
+static volatile uint32_t lastElsewhereMs = 0;
 
 static constexpr uint32_t STALE_MS  = 250;   // no packet for this long: bars drop
 static constexpr uint32_t QUIET_MS  = 1500;  // no sound for this long: record stops
 static constexpr uint8_t  LOUD_LEVEL = 12;
+static constexpr uint32_t ELSEWHERE_MS        = 2500;   // the Pi sends 'NP' every second
+static constexpr uint32_t ELSEWHERE_LAYOUT_MS = 15000;
 
 void begin() {
   started = udp.begin(AUDIO_PORT) == 1;
@@ -31,6 +34,10 @@ void poll() {
   while (int size = udp.parsePacket()) {
     int n = udp.read(buf, sizeof(buf));
     if (size > (int)sizeof(buf)) udp.flush();
+    if (n >= 2 && buf[0] == 'N' && buf[1] == 'P') {
+      lastElsewhereMs = millis();
+      continue;
+    }
     if (n < 3 || buf[0] != 'A' || buf[1] != 'L') continue;
     int count = buf[2];
     if (count > MAX_BANDS || n < 3 + count) continue;
@@ -55,6 +62,17 @@ int latest(uint8_t* out, int max, uint32_t nowMs) {
 
 bool playing(uint32_t nowMs) {
   return lastLoudMs != 0 && nowMs - lastLoudMs < QUIET_MS;
+}
+
+bool playingElsewhere(uint32_t nowMs) {
+  return lastElsewhereMs != 0 && nowMs - lastElsewhereMs < ELSEWHERE_MS;
+}
+
+bool elsewhereLayout(uint32_t nowMs) {
+  uint32_t np = lastElsewhereMs, al = lastPacketMs;
+  if (np == 0 || nowMs - np >= ELSEWHERE_LAYOUT_MS) return false;
+  // Levels from the Pi since the last 'NP': the Pi has the music now.
+  return al == 0 || (int32_t)(np - al) > 0;
 }
 
 }  // namespace audio_levels

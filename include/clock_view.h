@@ -29,6 +29,10 @@ bool inTimeArea(int x, int y);
 // "h:mm" in the 6x11 digits at 1x, centered in [x0, x1], top row at y.
 void drawTimeSmall(Adafruit_GFX& g, int x0, int x1, int y, int hour12, int minute, uint16_t color);
 
+// The date in two lines centered in [x0, x1], e.g. "WED" over "NOV 11", in the 5x7
+// font with narrow spaces so it fits a 32px half. Nothing until the date is known.
+void drawDateStacked(Adafruit_GFX& g, int x0, int x1, int y, uint16_t color);
+
 // Date line for drawFace, e.g. "WED NOV 11". Empty hides it.
 void setDate(const char* text);
 
