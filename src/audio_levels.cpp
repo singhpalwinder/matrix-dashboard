@@ -24,6 +24,14 @@ static constexpr uint8_t  LOUD_LEVEL = 12;
 static constexpr uint32_t ELSEWHERE_MS        = 2500;   // the Pi sends 'NP' every second
 static constexpr uint32_t ELSEWHERE_LAYOUT_MS = 15000;
 
+// True if `t` is less than `window` ms before `now`. Signed, because the timestamps are
+// written by the server task: one can land after the render loop read `now`, and
+// unsigned `now - t` would then wrap to ~49 days and read as long ago. That made the
+// soundbar layout drop to the bars for a frame whenever an 'NP' packet raced a frame.
+static inline bool within(uint32_t now, uint32_t t, uint32_t window) {
+  return t != 0 && (int32_t)(now - t) < (int32_t)window;
+}
+
 void begin() {
   started = udp.begin(AUDIO_PORT) == 1;
 }
@@ -54,23 +62,23 @@ void poll() {
 }
 
 int latest(uint8_t* out, int max, uint32_t nowMs) {
-  if (bands == 0 || nowMs - lastPacketMs > STALE_MS) return 0;
+  if (bands == 0 || !within(nowMs, lastPacketMs, STALE_MS + 1)) return 0;
   int n = bands < max ? bands : max;
   for (int i = 0; i < n; ++i) out[i] = levels[i];
   return n;
 }
 
 bool playing(uint32_t nowMs) {
-  return lastLoudMs != 0 && nowMs - lastLoudMs < QUIET_MS;
+  return within(nowMs, lastLoudMs, QUIET_MS);
 }
 
 bool playingElsewhere(uint32_t nowMs) {
-  return lastElsewhereMs != 0 && nowMs - lastElsewhereMs < ELSEWHERE_MS;
+  return within(nowMs, lastElsewhereMs, ELSEWHERE_MS);
 }
 
 bool elsewhereLayout(uint32_t nowMs) {
   uint32_t np = lastElsewhereMs, al = lastPacketMs;
-  if (np == 0 || nowMs - np >= ELSEWHERE_LAYOUT_MS) return false;
+  if (!within(nowMs, np, ELSEWHERE_LAYOUT_MS)) return false;
   // Levels from the Pi since the last 'NP': the Pi has the music now.
   return al == 0 || (int32_t)(np - al) > 0;
 }
