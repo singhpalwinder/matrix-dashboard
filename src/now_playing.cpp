@@ -133,7 +133,8 @@ void render(Adafruit_GFX& g, int hour12, int minute, uint32_t nowMs) {
     updatePalette(img);
   }
 
-  float targetSpeed = audio_levels::playing(nowMs) ? SPIN_RAD_S : 0.f;
+  bool spinning = audio_levels::playing(nowMs) || audio_levels::playingElsewhere(nowMs);
+  float targetSpeed = spinning ? SPIN_RAD_S : 0.f;
   if (speed < targetSpeed) speed = fminf(targetSpeed, speed + SPIN_ACCEL * dt);
   else                     speed = fmaxf(targetSpeed, speed - SPIN_ACCEL * dt);
   angle = fmodf(angle + speed * dt, 6.2831853f);
@@ -143,7 +144,11 @@ void render(Adafruit_GFX& g, int hour12, int minute, uint32_t nowMs) {
 
   g.fillRect(32, 0, 32, 32, 0);
   clock_view::drawTimeSmall(g, 33, 63, 1, hour12, minute, pack(light));
-  drawBars(g, nowMs, dt);
+  if (audio_levels::elsewhereLayout(nowMs)) {
+    clock_view::drawDateStacked(g, 33, 63, 14, pack(accent));  // rows 14-20 and 23-29
+  } else {
+    drawBars(g, nowMs, dt);
+  }
 }
 
 }  // namespace now_playing
